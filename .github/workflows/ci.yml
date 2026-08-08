@@ -63,7 +63,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy -D warnings
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   test:
     name: test
@@ -85,10 +85,10 @@ jobs:
       # `container-tests` feature — see tests/container_{neo4j,build,repos}.rs and
       # container-tests.yml), so this needs no Docker daemon.
       - name: cargo test (lib + integration)
-        run: cargo test --locked --all-targets
+        run: cargo test --workspace --locked --all-targets
 
       - name: cargo test --doc
-        run: cargo test --locked --doc
+        run: cargo test --workspace --locked --doc
 
   msrv:
     name: msrv
@@ -177,7 +177,7 @@ jobs:
           workspaces: "."
 
       - name: cargo doc --all-features
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --workspace --no-deps --all-features
 
   deny:
     name: deny
@@ -227,8 +227,17 @@ jobs:
       # The cheapest possible guard against a bad first `cargo publish`: catches a broken
       # `exclude`/`include`, a missing `readme`/`license-file`, or a manifest that plain
       # `cargo build` would never notice is wrong. Neither of these steps uploads anything.
+      #
+      # `--workspace` is load-bearing since the workspace split, not tidiness. A plain
+      # `cargo publish --dry-run` at the root fails with "no matching package named
+      # `lci-codegraph-model` found": the root crate's path+version dependencies do not exist on
+      # crates.io, so resolving them against the registry index cannot work. `--workspace` packages
+      # all three together and resolves the internal dependencies locally, which is also exactly
+      # what the real publish does — so this gate exercises the same code path rather than a
+      # weaker approximation of it. Needs cargo >= 1.90; `stable` above satisfies that (the 1.88
+      # MSRV is checked by the separate `msrv` job, which does not publish).
       - name: cargo package --list
-        run: cargo package --list --locked
+        run: cargo package --workspace --list --locked
 
       - name: cargo publish --dry-run
-        run: cargo publish --dry-run --locked
+        run: cargo publish --workspace --dry-run --locked

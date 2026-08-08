@@ -5,6 +5,8 @@
 //! tree-sitter node-kind extractor (byte-stable golden), or the grammar's bundled `tags.scm` query
 //! ([`crate::tags`]) every other language uses.
 
+use std::sync::Arc;
+
 use tree_sitter::{Node, Tree};
 
 use super::callee::{self, CalleeRef};
@@ -65,10 +67,23 @@ pub fn extract_file(tree: &Tree, source_file: &str, source: &str, language: &str
     facts
 }
 
+/// The nearest enclosing type scope threaded down through [`walk`]: the type's own simple name (used
+/// to disambiguate same-named callables, as before) plus — since Phase 0
+/// (docs/design/spring-aware-graph.md §4.2, item 2) — the simple names of whatever it
+/// `extends`/`implements` ([`callee::supertype_names`]), so [`super::resolve::pick`] can accept a
+/// qualifier that names an interface/superclass, not only an exact scope match. Bundled into one
+/// struct rather than adding a fourth thread-through parameter to `walk`, which already carries
+/// `#[allow(clippy::too_many_arguments)]`.
+#[derive(Clone, Default)]
+struct EnclosingScope {
+    name: Option<String>,
+    supers: Arc<[String]>,
+}
+
 /// DFS that, in one pass, emits def nodes + `contains`/`method` edges and records call sites
-/// attributed to the innermost enclosing def. `scope` is the nearest enclosing type name (for
-/// same-name method disambiguation); `enclosing_kind` is the nearest enclosing def kind (to decide
-/// `contains` vs `method`).
+/// attributed to the innermost enclosing def. `scope` is the nearest enclosing [`EnclosingScope`] (for
+/// same-name method disambiguation, and — Phase 0 — supertype-aware qualifier matching);
+/// `enclosing_kind` is the nearest enclosing def kind (to decide `contains` vs `method`).
 #[allow(clippy::too_many_arguments)]
 fn walk(
     classifier: Classifier<'_>,
@@ -76,7 +91,7 @@ fn walk(
     bytes: &[u8],
     source_file: &str,
     stack: &mut Vec<String>,
-    scope: Option<&str>,
+    scope: Option<&EnclosingScope>,
     enclosing_kind: Option<&str>,
     facts: &mut FileSymbols,
 ) {
@@ -85,7 +100,14 @@ fn walk(
         if let Some((kind, name)) = classifier.classify(&child, bytes) {
             // 1-based line (Graphify parity).
             let start_line = child.start_position().row as i64 + 1;
-            let node_id = def_node_id(source_file, start_line, kind, name.as_deref());
+            // `def_node_id` lives in `lci-codegraph-model` (shared with any framework extractor that
+            // needs to produce byte-identical ids for the same definitions) and is a plain formatter —
+            // the kind-fallback for a nameless def is this call site's decision, not the helper's.
+            let node_id = lci_codegraph_model::def_node_id(
+                source_file,
+                start_line,
+                name.as_deref().unwrap_or(kind),
+            );
             let parent_id = stack
                 .last()
                 .cloned()
@@ -125,12 +147,28 @@ fn walk(
                 facts.callables.push(Callable {
                     name: n,
                     node_id: node_id.clone(),
-                    scope: scope.map(str::to_string),
+                    scope: scope.and_then(|s| s.name.clone()),
+                    scope_supers: scope.map_or_else(|| Arc::from([]), |s| Arc::clone(&s.supers)),
                 });
             }
-            // The type scope introduced for this def's children (qualifies nested methods).
-            let child_scope: Option<String> =
-                classifier.container_scope(&child, kind, name.as_deref(), bytes);
+            // The type scope introduced for this def's children (qualifies nested methods, and —
+            // Phase 0 — carries its `extends`/`implements` supers for `pick`'s qualifier matching).
+            // Computed only when `child` actually introduces a name scope (a type container): a
+            // non-container def (e.g. a plain function) resets scope to `None` for its own
+            // children, exactly as before this change.
+            let child_name = classifier.container_scope(&child, kind, name.as_deref(), bytes);
+            let next_scope_owner;
+            let next_scope: Option<&EnclosingScope> = match child_name {
+                Some(child_name) => {
+                    let supers = callee::supertype_names(&child, bytes);
+                    next_scope_owner = EnclosingScope {
+                        name: Some(child_name),
+                        supers: Arc::from(supers),
+                    };
+                    Some(&next_scope_owner)
+                }
+                None => None,
+            };
             stack.push(node_id);
             walk(
                 classifier,
@@ -138,7 +176,7 @@ fn walk(
                 bytes,
                 source_file,
                 stack,
-                child_scope.as_deref(),
+                next_scope,
                 Some(kind),
                 facts,
             );
@@ -295,13 +333,6 @@ impl Classifier<'_> {
             }),
         }
     }
-}
-
-/// Node id for a definition: `<file>#<line>:<name>`. Line makes it unique within a file even when two
-/// defs share a name (e.g. `new` on two impls); the name keeps it human-recognisable.
-fn def_node_id(source_file: &str, start_line: i64, kind: &str, name: Option<&str>) -> String {
-    let label = name.unwrap_or(kind);
-    format!("{source_file}#{start_line}:{label}")
 }
 
 fn file_label(source_file: &str) -> String {

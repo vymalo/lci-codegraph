@@ -1376,6 +1376,8 @@ dependencies = [
  "bon",
  "flate2",
  "ignore",
+ "lci-codegraph-model",
+ "lci-codegraph-spring",
  "lopdf",
  "neo4rs",
  "pdf-extract",
@@ -1393,6 +1395,23 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-typescript",
  "ureq",
+]
+
+[[package]]
+name = "lci-codegraph-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "lci-codegraph-spring"
+version = "0.1.0"
+dependencies = [
+ "lci-codegraph-model",
+ "tree-sitter",
+ "tree-sitter-java",
 ]
 
 [[package]]

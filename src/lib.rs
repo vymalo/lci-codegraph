@@ -31,6 +31,16 @@
 //! - [`walk`] — the filesystem reader ([`FsSource`]) plus the one-pass [`walk_checkout`] driver
 //!   (+ embeddings, when configured), honouring both ignore layers.
 //! - a parity-harness scaffold (`tests/parity.rs`) that snapshots the graph against a golden.
+//!
+//! ## Workspace layout
+//! This package is the root of a Cargo workspace, not a standalone crate. [`Graph`], [`GraphNode`],
+//! [`GraphEdge`] (re-exported below) live in the sibling `crates/lci-codegraph-model` crate and are
+//! merely re-exported here — that crate depends on nothing but `serde`, which is what lets a
+//! framework-extractor crate (docs/design/spring-aware-graph.md) speak the same node/edge vocabulary,
+//! and produce byte-identical definition ids via its shared `def_node_id`, without either crate
+//! depending on the other. See `docs/architecture.md` for the full shape and `lci-codegraph-model`'s
+//! own crate-level doc for why a framework's annotation surface earns a crate boundary rather than a
+//! module.
 
 pub mod chunk;
 pub mod embed;

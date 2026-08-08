@@ -25,6 +25,32 @@ MSRV: Rust **1.88**. The crate is edition 2024 (floor 1.85), but `lopdf` — pul
 [RUSTSEC-2026-0187](https://rustsec.org/advisories/RUSTSEC-2026-0187) — uses let-chains, stabilised
 in 1.88. CI checks this floor on every build.
 
+## Workspace layout
+
+The repo root is a Cargo workspace, not a single crate: `Cargo.toml` at the root carries both
+`[workspace]` and the `[package]` for `lci-codegraph` itself, so the `Install` line above, `src/`,
+`tests/`, `examples/`, `docs/`, and the docs.rs links are all exactly where they were before the
+split — nothing about depending on this crate changed. Two members live under `crates/`:
+
+- **[`lci-codegraph-model`](crates/lci-codegraph-model)** — the vocabulary every extractor in the
+  workspace has to agree on byte-for-byte: `GraphNode`, `GraphEdge`, `Graph`, the `def_node_id`
+  id-formatting helper, and `FrameworkFacts`/`FrameworkCallTarget` (the seam a framework-extractor
+  crate hands facts across, see below). It depends on nothing but `serde` — the bottom of the
+  workspace's dependency graph, so a framework-extractor crate and this core crate can both depend
+  on it without either depending on the other.
+- **[`lci-codegraph-spring`](crates/lci-codegraph-spring)** — `extract_facts(&Tree, source,
+  source_file) -> FrameworkFacts`: a Spring-aware sibling pass over the same `tree_sitter::Tree` this
+  crate already parsed for a Java file. See [Spring-aware Java](#spring-aware-java) below for what it
+  contributes.
+
+The reason the boundary is a *crate* and not a module: a framework's annotation surface is a curated
+allowlist that churns every release — Spring's own annotation set moves every major/minor, and this
+repo's own Spring fixtures already straddle the `javax.persistence` → `jakarta.persistence`
+migration — a different and narrower kind of coupling than a tree-sitter grammar, which changes
+rarely and is maintained by someone else. Behind a crate boundary, "does the core know about Spring?"
+is answerable by reading `Cargo.toml`'s dependency list. Full rationale in `docs/architecture.md` and
+`docs/design/spring-aware-graph.md` §5.2.
+
 ## Quickstart
 
 ```rust
@@ -165,6 +191,17 @@ A [`Graph`](https://docs.rs/lci-codegraph/latest/lci_codegraph/struct.Graph.html
 - **`calls`** — a caller definition → a callee definition, resolved **across files**: a call recorded
   in file A can resolve to a definition in file B.
 
+These three relations are the whole vocabulary — nothing new was added to it. What *is* new are two
+additional **node kinds** a Java file can contribute when it imports Spring (see
+[Spring-aware Java](#spring-aware-java) below): `route` and `external_service`. Both are plain
+`GraphNode`s, not a fourth relation — a `route` node's edge to its handler method, and an
+`external_service` node sitting as the `target` of a `calls` edge from whatever reaches it, are
+ordinary `calls` edges between ordinary nodes. That distinction matters because `GraphNode` has no
+relation-specific shape (`node_id`, `label`, `source_file`, `start_line` — the same four fields no
+matter what the node represents): anything that already matches nodes by `node_id`/`label`/
+`source_file` finds a `route` or `external_service` node exactly the way it finds any other, with no
+change on that side at all.
+
 Two conventions to know when reading node ids and labels:
 
 - **Line numbers in the graph are 1-based** (`start_line: 1` is the file's first line) — unlike a
@@ -244,6 +281,66 @@ graphed.
 
 Adding a language means implementing one `LanguageSupport` in `src/lang/<language>.rs` and adding it
 to the registry; see `docs/architecture.md`.
+
+## Spring-aware Java
+
+Java gets one thing beyond the grammar's bundled `tags.scm`: when a file imports
+`org.springframework.*` or `jakarta.persistence.*`, `lci-codegraph-spring::extract_facts` runs as a
+sibling pass over the same parse and contributes `FrameworkFacts` — additive nodes, edges, and call
+targets that `graph::resolve` folds into the graph the language-level extractor already built. A file
+that imports neither pays for one `import_declaration` scan and nothing else; every other language,
+and every non-Spring Java file, is unaffected.
+
+Three things it recognises, each *syntactically provable* from the file's own AST — no XML bean
+config, no `@ComponentScan`/classpath resolution, no `@Profile` evaluation (`docs/design/spring-aware-graph.md`
+§5.3 explains why each stays out of scope: a confident wrong answer about wiring is worse than none):
+
+- **HTTP routes.** Each `@GetMapping`/`@PostMapping`/`@PutMapping`/`@DeleteMapping`/`@PatchMapping`,
+  or a bare `@RequestMapping`, on a method inside an `@RequestMapping`-annotated class becomes a
+  `route` node — `node_id`/`label` compose the class-level prefix with the method-level suffix
+  (`route:GET:/api/accounts/{email}`), and `source_file`/`start_line` point at the handler method
+  itself, not a synthetic location. A `calls` edge runs from the route to the handler.
+- **Outbound service boundaries.** Each `@FeignClient(name = "...")` interface becomes an
+  `external_service` node (`service:payment-service`) at the interface's own declaration; a call site
+  reaching one of its methods resolves to that node instead of dropping. Two files declaring the same
+  `@FeignClient` name collapse to one node deterministically (lowest `source_file`/`start_line` wins)
+  instead of producing duplicate `node_id`s.
+- **Spring Data repository methods.** A bodiless method on an interface whose `extends`/`implements`
+  clause names a Spring Data marker interface (`Repository`, `CrudRepository`, `JpaRepository`, …,
+  matched by simple name) stays a valid call target instead of being excluded as an unimplemented
+  declaration — Spring generates its implementation from the method name at runtime, so there is
+  provably no body anywhere in source to find. This carve-out is per-file: it does not follow a
+  *transitive* marker (an interface extending your own base interface that extends `JpaRepository`),
+  and it does not know about the `<Name>Impl` companion-class escape hatch Spring Data itself
+  supports — both present at once leaves two candidates and the resolver drops the call, which is
+  correct precision-favouring behaviour but not the most useful one.
+
+Verified end to end against a six-file fixture, `tests/fixtures/spring-repo/` (golden:
+`tests/golden/spring-repo.graph.json`):
+
+```
+AccountController.java#24:getAccount     --calls--> AccountServiceImpl.java#21:findByEmail
+AccountController.java#30:createAccount  --calls--> AccountServiceImpl.java#28:create
+AccountServiceImpl.java#21:findByEmail   --calls--> AccountRepository.java#15:findByEmail
+AccountServiceImpl.java#28:create        --calls--> service:payment-service
+route:GET:/api/accounts/{email}          --calls--> AccountController.java#24:getAccount
+route:POST:/api/accounts                 --calls--> AccountController.java#30:createAccount
+```
+
+The first edge is the headline case, and it is not Spring-specific at all: `AccountController` calls
+`accountService.findByEmail(email)`, where the field `accountService` is typed `AccountService` — an
+interface with one implementation, `AccountServiceImpl`, wired by `@Service` and constructor
+injection. It resolves because of a general fix to how Java call qualifiers are recovered (see
+[Limitations](#limitations) below), which turns the call's qualifier from the field name
+`accountService` into its declared type `AccountService`, matching `AccountServiceImpl implements
+AccountService`. The third and fourth edges are the two genuinely Spring-specific facts: a repository
+method with no body anywhere in source, and a call that leaves this codebase for another one entirely.
+
+**Not built:** DI wiring as its own relation (`injects`), and disambiguation between multiple
+`@Service`/`@Component` implementations of one interface (`@Primary`/`@Qualifier`). Both are real and
+scoped in `docs/design/spring-aware-graph.md` §2.3/§4.3, but gated on a read-side change in a
+*different* repository — see that document's "What was built" note for why shipping the write side
+alone would land edges nothing downstream could query yet.
 
 ## Configuration
 
@@ -493,11 +590,26 @@ Cross-file `calls` resolution is precision-favouring, not best-effort: when a ba
 **more than one** definition and no qualifier narrows it to exactly one, the call is **dropped**, not
 guessed — it is never fanned out to every same-named candidate and never resolved to an arbitrary one.
 Concretely: a name defined in two files with no importing/qualifying context to tell them apart
-produces no `calls` edge for that call site. A qualifier is recovered only from the immediate receiver
-in the source (`Foo.bar()` → qualifier `Foo`) — there is no type inference, so `self`/`this`/`cls`/
-`super` receivers, and calls through a variable of unknown type, carry no qualifier and resolve on the
-bare name alone (a single match still resolves; multiple still drop). This trades recall for not
-mis-attributing a call to the wrong definition.
+produces no `calls` edge for that call site.
+
+A qualifier is recovered structurally, not through full type inference — and how much it recovers
+depends on the language. For **Java**, a call through a field, formal parameter, local variable,
+enhanced-`for` variable, or caught exception (`h.help()`) resolves the qualifier to the receiver's
+**declared type** (`Helper`, not `h`), recovered by walking the same file's AST back to where `h` was
+declared; a qualifier naming an interface or superclass the candidate's enclosing type
+`extends`/`implements` also counts as a match, not only an exact name (this is what lets
+`accountService.findById()` resolve to the interface's sole implementation with no Spring knowledge
+involved — see [Spring-aware Java](#spring-aware-java) above). For every other language (Rust, Python,
+JavaScript/TypeScript/TSX), the qualifier is still just the literal receiver text (`Foo.bar()` →
+`Foo`). In every language, `self`/`this`/`cls`/`super` receivers carry no qualifier — they are
+deliberately treated as unqualified rather than given a bogus type name. Two limits remain even for
+Java: there is no *cross-file* type resolution (a receiver whose declaration — an inherited field from
+a superclass in another file, say — isn't found by walking the call's own file falls back to the bare
+identifier text, exactly as it did before this fix), and no classpath — an interface/superclass is
+matched by simple name only, never against an imported fully-qualified type, so two same-named
+interfaces from different packages are indistinguishable. A single match still resolves either way;
+multiple candidates still drop. This trades recall for not mis-attributing a call to the wrong
+definition.
 
 ## Provenance
 

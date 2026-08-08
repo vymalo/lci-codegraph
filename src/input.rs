@@ -15,6 +15,8 @@
 
 use std::borrow::Cow;
 
+use lci_codegraph_model::FrameworkFacts;
+
 use crate::chunk::{self, Chunk};
 use crate::graph::{self, FileSymbols, Graph};
 use crate::lang;
@@ -152,6 +154,13 @@ pub struct Indexer {
     options: IndexOptions,
     chunks: Vec<Chunk>,
     file_symbols: Vec<FileSymbols>,
+    /// One [`FrameworkFacts`] per Java input the one-parse fast path ran
+    /// `lci_codegraph_spring::extract_facts` over — a sibling pass over the SAME tree
+    /// `graph::extract_file` already consumed, not a second parse (see `push` below). Empty for
+    /// every non-Java language, by construction: this crate stays a pure syntactic extractor with
+    /// zero framework knowledge of its own (`docs/design/spring-aware-graph.md` §5.2) — the one
+    /// framework-shaped thing in this whole crate is this field and the one call that fills it.
+    framework_facts: Vec<FrameworkFacts>,
     stats: IndexStats,
 }
 
@@ -162,6 +171,7 @@ impl Indexer {
             options,
             chunks: Vec::new(),
             file_symbols: Vec::new(),
+            framework_facts: Vec::new(),
             stats: IndexStats::default(),
         }
     }
@@ -243,10 +253,20 @@ impl Indexer {
         }
 
         let file_chunks = if self.options.build_graph && lang::has_graph(language) {
-            // Parse ONCE and feed both the chunker and the graph builder (ADR-0086 "parse once").
+            // Parse ONCE and feed the chunker, the graph builder, and — Java only — the Spring
+            // framework sibling pass, all off this one tree (ADR-0086 "parse once").
             if let Some(tree) = lang::parse(source, language) {
                 self.file_symbols
                     .push(graph::extract_file(&tree, &path, source, language));
+                // A sibling walk over the SAME tree `extract_file` just consumed, not a second
+                // parse — see `docs/architecture.md`'s one-parse section. Gated to Java only: this
+                // is the only language `lci-codegraph-spring` knows how to read annotations/
+                // interfaces from, and every other language must pay exactly nothing for a pass
+                // that could never find anything relevant to it.
+                if language == "java" {
+                    self.framework_facts
+                        .push(lci_codegraph_spring::extract_facts(&tree, source, &path));
+                }
                 let mut cs = chunk::chunk_tree(&tree, &path, source, language, self.options.tuning);
                 if cs.is_empty() {
                     cs = chunk::chunk_text(&path, source, language, self.options.tuning);
@@ -275,7 +295,7 @@ impl Indexer {
     #[must_use]
     pub fn finish(self) -> IndexOutput {
         let graph = if self.options.build_graph {
-            graph::resolve(self.file_symbols)
+            graph::resolve(self.file_symbols, self.framework_facts)
         } else {
             Graph::default()
         };

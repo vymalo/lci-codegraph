@@ -1,0 +1,266 @@
+{
+  "nodes": [
+    {
+      "node_id": "Account.java",
+      "label": "Account.java",
+      "source_file": "Account.java",
+      "start_line": 1
+    },
+    {
+      "node_id": "Account.java#10:Account",
+      "label": "Account",
+      "source_file": "Account.java",
+      "start_line": 10
+    },
+    {
+      "node_id": "Account.java#17:getId",
+      "label": "getId()",
+      "source_file": "Account.java",
+      "start_line": 17
+    },
+    {
+      "node_id": "Account.java#21:getEmail",
+      "label": "getEmail()",
+      "source_file": "Account.java",
+      "start_line": 21
+    },
+    {
+      "node_id": "AccountController.java",
+      "label": "AccountController.java",
+      "source_file": "AccountController.java",
+      "start_line": 1
+    },
+    {
+      "node_id": "AccountController.java#15:AccountController",
+      "label": "AccountController",
+      "source_file": "AccountController.java",
+      "start_line": 15
+    },
+    {
+      "node_id": "AccountController.java#24:getAccount",
+      "label": "getAccount()",
+      "source_file": "AccountController.java",
+      "start_line": 24
+    },
+    {
+      "node_id": "AccountController.java#30:createAccount",
+      "label": "createAccount()",
+      "source_file": "AccountController.java",
+      "start_line": 30
+    },
+    {
+      "node_id": "AccountRepository.java",
+      "label": "AccountRepository.java",
+      "source_file": "AccountRepository.java",
+      "start_line": 1
+    },
+    {
+      "node_id": "AccountRepository.java#15:findByEmail",
+      "label": "findByEmail()",
+      "source_file": "AccountRepository.java",
+      "start_line": 15
+    },
+    {
+      "node_id": "AccountRepository.java#8:AccountRepository",
+      "label": "AccountRepository",
+      "source_file": "AccountRepository.java",
+      "start_line": 8
+    },
+    {
+      "node_id": "AccountService.java",
+      "label": "AccountService.java",
+      "source_file": "AccountService.java",
+      "start_line": 1
+    },
+    {
+      "node_id": "AccountService.java#11:create",
+      "label": "create()",
+      "source_file": "AccountService.java",
+      "start_line": 11
+    },
+    {
+      "node_id": "AccountService.java#8:AccountService",
+      "label": "AccountService",
+      "source_file": "AccountService.java",
+      "start_line": 8
+    },
+    {
+      "node_id": "AccountService.java#9:findByEmail",
+      "label": "findByEmail()",
+      "source_file": "AccountService.java",
+      "start_line": 9
+    },
+    {
+      "node_id": "AccountServiceImpl.java",
+      "label": "AccountServiceImpl.java",
+      "source_file": "AccountServiceImpl.java",
+      "start_line": 1
+    },
+    {
+      "node_id": "AccountServiceImpl.java#21:findByEmail",
+      "label": "findByEmail()",
+      "source_file": "AccountServiceImpl.java",
+      "start_line": 21
+    },
+    {
+      "node_id": "AccountServiceImpl.java#28:create",
+      "label": "create()",
+      "source_file": "AccountServiceImpl.java",
+      "start_line": 28
+    },
+    {
+      "node_id": "AccountServiceImpl.java#7:AccountServiceImpl",
+      "label": "AccountServiceImpl",
+      "source_file": "AccountServiceImpl.java",
+      "start_line": 7
+    },
+    {
+      "node_id": "PaymentClient.java",
+      "label": "PaymentClient.java",
+      "source_file": "PaymentClient.java",
+      "start_line": 1
+    },
+    {
+      "node_id": "PaymentClient.java#10:PaymentClient",
+      "label": "PaymentClient",
+      "source_file": "PaymentClient.java",
+      "start_line": 10
+    },
+    {
+      "node_id": "PaymentClient.java#12:openLedger",
+      "label": "openLedger()",
+      "source_file": "PaymentClient.java",
+      "start_line": 12
+    },
+    {
+      "node_id": "route:GET:/api/accounts/{email}",
+      "label": "GET /api/accounts/{email}",
+      "source_file": "AccountController.java",
+      "start_line": 24
+    },
+    {
+      "node_id": "route:POST:/api/accounts",
+      "label": "POST /api/accounts",
+      "source_file": "AccountController.java",
+      "start_line": 30
+    },
+    {
+      "node_id": "service:payment-service",
+      "label": "payment-service",
+      "source_file": "PaymentClient.java",
+      "start_line": 10
+    }
+  ],
+  "edges": [
+    {
+      "source": "Account.java",
+      "target": "Account.java#10:Account",
+      "relation": "contains"
+    },
+    {
+      "source": "Account.java#10:Account",
+      "target": "Account.java#17:getId",
+      "relation": "method"
+    },
+    {
+      "source": "Account.java#10:Account",
+      "target": "Account.java#21:getEmail",
+      "relation": "method"
+    },
+    {
+      "source": "AccountController.java",
+      "target": "AccountController.java#15:AccountController",
+      "relation": "contains"
+    },
+    {
+      "source": "AccountController.java#15:AccountController",
+      "target": "AccountController.java#24:getAccount",
+      "relation": "method"
+    },
+    {
+      "source": "AccountController.java#15:AccountController",
+      "target": "AccountController.java#30:createAccount",
+      "relation": "method"
+    },
+    {
+      "source": "AccountController.java#24:getAccount",
+      "target": "AccountServiceImpl.java#21:findByEmail",
+      "relation": "calls"
+    },
+    {
+      "source": "AccountController.java#30:createAccount",
+      "target": "AccountServiceImpl.java#28:create",
+      "relation": "calls"
+    },
+    {
+      "source": "AccountRepository.java",
+      "target": "AccountRepository.java#8:AccountRepository",
+      "relation": "contains"
+    },
+    {
+      "source": "AccountRepository.java#8:AccountRepository",
+      "target": "AccountRepository.java#15:findByEmail",
+      "relation": "method"
+    },
+    {
+      "source": "AccountService.java",
+      "target": "AccountService.java#8:AccountService",
+      "relation": "contains"
+    },
+    {
+      "source": "AccountService.java#8:AccountService",
+      "target": "AccountService.java#11:create",
+      "relation": "method"
+    },
+    {
+      "source": "AccountService.java#8:AccountService",
+      "target": "AccountService.java#9:findByEmail",
+      "relation": "method"
+    },
+    {
+      "source": "AccountServiceImpl.java",
+      "target": "AccountServiceImpl.java#7:AccountServiceImpl",
+      "relation": "contains"
+    },
+    {
+      "source": "AccountServiceImpl.java#21:findByEmail",
+      "target": "AccountRepository.java#15:findByEmail",
+      "relation": "calls"
+    },
+    {
+      "source": "AccountServiceImpl.java#28:create",
+      "target": "service:payment-service",
+      "relation": "calls"
+    },
+    {
+      "source": "AccountServiceImpl.java#7:AccountServiceImpl",
+      "target": "AccountServiceImpl.java#21:findByEmail",
+      "relation": "method"
+    },
+    {
+      "source": "AccountServiceImpl.java#7:AccountServiceImpl",
+      "target": "AccountServiceImpl.java#28:create",
+      "relation": "method"
+    },
+    {
+      "source": "PaymentClient.java",
+      "target": "PaymentClient.java#10:PaymentClient",
+      "relation": "contains"
+    },
+    {
+      "source": "PaymentClient.java#10:PaymentClient",
+      "target": "PaymentClient.java#12:openLedger",
+      "relation": "method"
+    },
+    {
+      "source": "route:GET:/api/accounts/{email}",
+      "target": "AccountController.java#24:getAccount",
+      "relation": "calls"
+    },
+    {
+      "source": "route:POST:/api/accounts",
+      "target": "AccountController.java#30:createAccount",
+      "relation": "calls"
+    }
+  ]
+}

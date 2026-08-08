@@ -1,0 +1,23 @@
+[package]
+name = "lci-codegraph-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shared graph vocabulary (nodes, edges, and the framework-facts seam) for lci-codegraph and its framework-extractor crates."
+keywords = ["code-graph", "static-analysis"]
+categories = ["development-tools"]
+
+[lib]
+path = "src/lib.rs"
+
+# The bottom of the workspace's dependency graph, deliberately: no tree-sitter, no lci-codegraph, no
+# anything else. That is what lets a framework-extractor crate (e.g. a Spring one) and the core
+# `lci-codegraph` crate both speak this vocabulary without either one depending on the other.
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

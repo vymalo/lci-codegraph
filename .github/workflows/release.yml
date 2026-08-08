@@ -1,24 +1,38 @@
-# Publishes lci-codegraph to crates.io and cuts a matching GitHub Release on every `v*` tag push.
+# Publishes lci-codegraph (and its two workspace-internal dependency crates) to crates.io, and cuts
+# a matching GitHub Release, on every `v*` tag push.
 #
 # ---------------------------------------------------------------------------------------------
-# BOOTSTRAP WARNING — read this before the first-ever release of this crate.
+# BOOTSTRAP WARNING — read this before the first-ever release of this workspace.
 #
 # crates.io Trusted Publishing (OIDC) CANNOT bootstrap a crate name that does not exist on the
 # registry yet: you can only attach a Trusted Publisher to a package that has already been
 # published at least once. This workflow authenticates with a plain `CARGO_REGISTRY_TOKEN`
 # secret (per the design brief) precisely because of that chicken-and-egg problem — but even a
 # token-based publish still needs the name reserved first if the org ever migrates this crate to
-# Trusted Publishing later. Concretely: the FIRST publish of `lci-codegraph` must be a manual,
-# token-authenticated `cargo publish` run from a maintainer's machine (or a one-off from this
-# workflow with a bootstrap token) to reserve the name on crates.io. Only after that first
-# publish exists can any subsequent automation — this workflow, or a Trusted Publisher — attach
-# to the crate at all. Skipping this and just pushing a tag against an empty crates.io namespace
-# will fail at the `cargo publish` step below with a registry-side error, not a workflow bug.
+# Trusted Publishing later.
+#
+# This workspace is now THREE package names, not one: `lci-codegraph-model`, `lci-codegraph-spring`,
+# and `lci-codegraph`, in that dependency order (`lci-codegraph-spring` depends on
+# `lci-codegraph-model`; `lci-codegraph` depends on both). Every one of them needs its own bootstrap
+# publish before automation can touch it — reserving `lci-codegraph` does nothing for the other two.
+# Concretely: the FIRST publish of each of the three names must be a manual, token-authenticated
+# `cargo publish -p <name>` run from a maintainer's machine (or a one-off from this workflow with a
+# bootstrap token), run in the SAME dependency order as the `publish` job below —
+# `lci-codegraph-model` first, then `lci-codegraph-spring`, then `lci-codegraph` — because a path
+# dependency on an unpublished crate cannot resolve on crates.io regardless of publish order
+# elsewhere. Only after all three first publishes exist can any subsequent automation — this
+# workflow, or a Trusted Publisher — attach to the crates at all. Skipping this and just pushing a
+# tag against an empty crates.io namespace will fail at the `cargo publish` step below with a
+# registry-side error, not a workflow bug.
 #
 # Also note: `cargo publish --dry-run` (used as a gate below) does NOT catch everything a real
 # publish does — it skips the actual upload and the registry-side "already published"/"name
 # taken" checks, so a dry-run passing is necessary but not sufficient proof the real publish will
-# succeed.
+# succeed. Worse, for this workspace specifically: a dry-run of `lci-codegraph-spring` or
+# `lci-codegraph` can only resolve if their path dependencies are ALREADY on crates.io at the
+# required version — before the three bootstrap publishes above have ever happened, those dry-runs
+# cannot succeed no matter how correct the code is. See the `gate` job below for how that is
+# handled honestly rather than papered over.
 # ---------------------------------------------------------------------------------------------
 
 name: Release
@@ -39,7 +53,7 @@ concurrency:
 
 jobs:
   verify-version:
-    name: verify tag matches Cargo.toml
+    name: verify tag matches every workspace member
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -48,18 +62,55 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Tag must match Cargo.toml version
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # branch: stable
+        with:
+          toolchain: stable
+
+      # `grep -m1 '^version' Cargo.toml` only ever checked the root package, and only worked
+      # because of where that line happened to sit in the file. Now that the version lives once in
+      # `[workspace.package].version` and is repeated by hand in the internal-dependency `version =
+      # "..."` requirements (see the comment on those lines in Cargo.toml), a real check needs
+      # `cargo metadata` — it resolves the workspace the same way `cargo publish` will, so it can
+      # assert both the version every package reports AND the version every internal dependency
+      # requirement resolves to, which is the guard that comment promises exists.
+      - name: Tag must match every workspace package and internal dependency requirement
         id: verify
         run: |
           tag_version="${GITHUB_REF_NAME#v}"
-          cargo_version=$(grep -m1 '^version' Cargo.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')
-          echo "Tag:          ${GITHUB_REF_NAME} (version $tag_version)"
-          echo "Cargo.toml:   $cargo_version"
-          if [ "$tag_version" != "$cargo_version" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match the version in Cargo.toml ($cargo_version). Refusing to publish — fix Cargo.toml or the tag and re-push."
+          echo "Tag: ${GITHUB_REF_NAME} (version $tag_version)"
+
+          meta="$(cargo metadata --format-version 1 --no-deps)"
+
+          # 1. lci-codegraph-model, lci-codegraph-spring, and lci-codegraph must ALL report the tag
+          #    version — a version bump that only touched some of the three manifests must fail here,
+          #    not surface later as a confusing crates.io dependency-resolution error.
+          drifted_packages="$(echo "$meta" | jq -r --arg v "$tag_version" \
+            '.packages[] | select(.version != $v) | "\(.name) is at \(.version)"')"
+          if [ -n "$drifted_packages" ]; then
+            while IFS= read -r line; do
+              echo "::error::Package version drift: $line, but tag ${GITHUB_REF_NAME} expects $tag_version. Refusing to publish — fix that crate's Cargo.toml or the tag and re-push."
+            done <<< "$drifted_packages"
             exit 1
           fi
-          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+
+          # 2. The internal path dependencies (lci-codegraph -> lci-codegraph-model,
+          #    lci-codegraph -> lci-codegraph-spring, lci-codegraph-spring -> lci-codegraph-model)
+          #    carry their own `version = "..."` requirement, duplicated by hand in Cargo.toml since
+          #    a path dependency that will also be a real crates.io dependency needs a real version
+          #    requirement. This is the guard for that duplicate: a requirement that drifted from the
+          #    tag would make crates.io reject the publish (or resolve a stale version), so catch it
+          #    here with a clear message instead.
+          drifted_deps="$(echo "$meta" | jq -r --arg v "^$tag_version" \
+            '.packages[] | . as $pkg | .dependencies[] | select(.path != null) | select(.req != $v) | "\($pkg.name) depends on \(.name) with requirement \(.req)"')"
+          if [ -n "$drifted_deps" ]; then
+            while IFS= read -r line; do
+              echo "::error::Internal dependency requirement drift: $line, but tag ${GITHUB_REF_NAME} expects ^$tag_version. Refusing to publish — fix that dependency's version requirement or the tag and re-push."
+            done <<< "$drifted_deps"
+            exit 1
+          fi
+
+          echo "All workspace packages and internal dependency requirements match $tag_version."
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
 
   gate:
     name: fmt + clippy + test + dry-run
@@ -83,18 +134,36 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy -D warnings
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: cargo test
-        run: cargo test --locked --all-targets
+        run: cargo test --workspace --locked --all-targets
 
       - name: cargo test --doc
-        run: cargo test --locked --doc
+        run: cargo test --workspace --locked --doc
 
       # Necessary-but-not-sufficient gate — see the bootstrap warning at the top of this file for
       # what `--dry-run` does not catch.
+      #
+      # This can honestly only cover `lci-codegraph-model` today. `--dry-run` resolves dependencies
+      # against the REAL registry, not the local workspace — it cannot substitute the path deps that
+      # `lci-codegraph-spring` and `lci-codegraph` have on their not-yet-published (until the
+      # bootstrap publishes in the header comment happen) siblings. Dry-running those two here would
+      # fail on an unrelated "dependency not found on crates.io" error regardless of whether their
+      # own code is publishable, which would make this gate useless noise rather than signal. So:
+      # a green gate is necessary but not sufficient for `lci-codegraph-spring` and `lci-codegraph`
+      # — their first real publish (see `publish` job below) is the actual proof for those two, not
+      # this step.
+      # Gates the real publish below against a manifest problem that only surfaces at package
+      # time. `--workspace` packages all three crates and resolves their internal dependencies
+      # locally, the same way the real publish does — a plain root-only dry-run cannot work at all
+      # here, since `lci-codegraph`'s path+version dependencies are not on the registry.
+      #
+      # Still necessary-but-not-sufficient: a dry run skips the upload, so it cannot see the
+      # registry-side "version already published" or "name taken" checks. A green gate does not
+      # prove the real publish will succeed.
       - name: cargo publish --dry-run
-        run: cargo publish --dry-run --locked
+        run: cargo publish --workspace --dry-run --locked
 
   publish:
     name: cargo publish
@@ -113,10 +182,20 @@ jobs:
         with:
           workspaces: "."
 
-      - name: cargo publish
+      # One `--workspace` publish, deliberately the SAME command the dry-run gate above runs.
+      # Cargo publishes the three crates in dependency order itself (`lci-codegraph-spring` needs
+      # `lci-codegraph-model`; `lci-codegraph` needs both) and blocks until each is visible in the
+      # index before starting the next, so no manual ordering or sleep/poll is needed.
+      #
+      # This was three explicit `cargo publish -p <name>` steps for log readability, which was the
+      # wrong trade: the gate can only run as `--workspace` (a root-only dry-run cannot resolve the
+      # unpublished internal dependencies at all), and a gate that exercises a different code path
+      # from the thing it gates is not really a gate. Keeping both on `--workspace` means a green
+      # dry-run is evidence about this exact command.
+      - name: cargo publish --workspace
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked
+        run: cargo publish --workspace --locked
 
   github-release:
     name: create GitHub release

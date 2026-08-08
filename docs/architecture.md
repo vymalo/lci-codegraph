@@ -3,16 +3,55 @@
 This is the document to read before touching `src/graph/`. It describes how the pipeline actually
 fits together, based on the code as it stands — not the aspirational shape.
 
+## Workspace layout
+
+The repo root is a Cargo workspace, not a single crate. `Cargo.toml` at the root carries both
+`[workspace]` and the `[package]` for `lci-codegraph` itself — `src/`, `tests/`, `examples/`, and
+`docs/` all keep their existing paths, so nothing about the published crate's layout, the README, or
+the docs.rs links moved. The one thing that *did* move out is `crates/lci-codegraph-model`: the shared
+node/edge vocabulary ([`GraphNode`](../src/graph/mod.rs), `GraphEdge`, `Graph`) plus the `def_node_id`
+id-formatting helper, now defined in that crate and re-exported by `src/graph/mod.rs` so
+`lci_codegraph::graph::GraphNode` (and the crate-root re-export in `src/lib.rs`) resolve exactly as
+before — the public API of `lci-codegraph` is unchanged by the split.
+
+The reason it is a *crate* boundary and not a plain module: `docs/design/spring-aware-graph.md` §5.2
+observes that a framework's annotation surface (Spring's `@Service`/`@FeignClient`/Spring-Data-marker
+allowlist) is a **curated allowlist that churns every release** — a materially different, narrower kind
+of coupling than a tree-sitter grammar, which changes rarely and is maintained by someone else. A
+framework-extractor crate needs to speak the exact same vocabulary `lci-codegraph` does (byte-identical
+node ids in particular — a framework-emitted edge to a handler method has to land on the same id
+`emit.rs` produced for it) without pulling in this crate's tree-sitter-parsing internals, and without
+this crate ever needing to depend back on a framework crate to understand its output. `crates/lci-codegraph-model`
+depends on nothing but `serde` — it is the bottom of the workspace's dependency graph, and the one place
+both sides of that seam can meet. The practical payoff: "does the core know about Spring?" is a question
+answerable by reading `Cargo.toml`'s dependency list, not by auditing every module for a stray `use`.
+
 ## The one-parse design
 
 Everything downstream of a source file starts from a single `tree_sitter::Tree` — and, since the
 raw-inputs cutover (ADR-0086), everything upstream of that starts from a
 [`RawInput`](../src/input.rs) rather than a file on disk. `src/input.rs`'s `Indexer::push` is where
 the one-parse decision is actually made: given one `RawInput`, it parses the content **once**
-(`lang::parse`) and hands that one tree to both:
+(`lang::parse`) and hands that one tree to:
 
-- the chunker (`chunk::chunk_tree`), and
-- the graph extractor (`graph::extract_file`), when `IndexOptions::build_graph` is set.
+- the chunker (`chunk::chunk_tree`),
+- the graph extractor (`graph::extract_file`), when `IndexOptions::build_graph` is set, and
+- for a Java input specifically, the Spring framework sibling pass (`lci_codegraph_spring::extract_facts`,
+  `crates/lci-codegraph-spring`).
+
+That third one is worth dwelling on, because it is the shape any *other* framework-extractor crate
+this project ever adds should follow. `docs/design/spring-aware-graph.md` §3.2 rejected teaching
+`graph::extract_file`'s `Classifier` about Spring outright: `Classifier` answers exactly three
+questions (definition? call site? enclosing scope?), and an annotation or a generic type argument is
+a different *kind* of fact than that seam is shaped for. So `lci-codegraph-spring` does not extend or
+wrap `extract_file` — it walks the identical `tree_sitter::Tree` a second time, independently, looking
+at node kinds (`marker_annotation`, `super_interfaces`, `type_arguments`) `extract_file`'s walk never
+inspects. Both walks read the same immutable tree; neither knows the other ran. This is still the
+one-parse design, not an exception to it — "one parse" has always meant "`lang::parse` runs once per
+input," not "the tree is visited once." Gated to `language == "java"` in `Indexer::push`: every other
+language pays nothing beyond that one string comparison, and Java repos that never import Spring pay
+one cheap `import_declaration` scan inside `lci-codegraph-spring` itself before it gives up (see that
+crate's own docs).
 
 `Indexer::push` never touches a filesystem itself — it only ever sees a `RawInput` that something
 else already produced. `src/walk.rs`'s `FsSource` is what turns a checkout into that stream of
@@ -28,6 +67,8 @@ This one-parse path only happens on the fast path — a language with a real gra
 (`lang::has_graph(language)`). If graph extraction is off, or the language has no extractor, the input
 is chunked via `chunk::chunk_file`, which re-parses internally if it needs to; there is no second
 parse when both chunking and graph extraction run, which is the case the one-parse design exists for.
+The framework sibling pass only ever runs alongside graph extraction, for the same reason: it has
+nothing to contribute to a chunk, and would be dead work if `build_graph` were off.
 
 ```mermaid
 flowchart TD
@@ -37,17 +78,22 @@ flowchart TD
     B -- yes --> C["lang::parse (once)"]
     C --> D["chunk::chunk_tree"]
     C --> E["graph::extract_file"]
+    C -- "language == java" --> S["lci_codegraph_spring::extract_facts<br/>(sibling walk, SAME tree)"]
     B -- no --> F["chunk::chunk_file<br/>(chunks only)"]
     E --> G["FileSymbols<br/>(nodes, contains/method edges,<br/>unresolved call sites, callables)"]
+    S --> T["FrameworkFacts<br/>(additive nodes, edges, call targets)"]
     G -.->|"collected across all pushed inputs"| H["Indexer::finish"]
-    H --> I["graph::resolve(Vec&lt;FileSymbols&gt;)"]
+    T -.->|"collected across all pushed inputs"| H
+    H --> I["graph::resolve(Vec&lt;FileSymbols&gt;, Vec&lt;FrameworkFacts&gt;)"]
     I --> J["canonical Graph<br/>(sorted + deduped)"]
 ```
 
 `Indexer` collects one `FileSymbols` per graph-eligible input into a `Vec<FileSymbols>` as `push` is
-called, then `finish` calls `graph::resolve` exactly once at the end, over everything that was pushed
+called, and — for Java inputs only — one `FrameworkFacts` per input into a sibling `Vec<FrameworkFacts>`,
+alongside it. `finish` calls `graph::resolve` exactly once at the end, over everything that was pushed
 — cross-file resolution needs every input's definitions to exist before it can attribute a call
-correctly.
+correctly, and that is just as true of a framework's cross-file facts (a `@FeignClient` boundary named
+in one file, called from another) as it is of a plain function call.
 
 ## The reader/indexer seam
 
@@ -160,8 +206,8 @@ same id — no counters, no UUIDs.
 
 ## Cross-file resolution
 
-`graph::resolve::resolve(files: Vec<FileSymbols>) -> Graph` is the only place that looks across files.
-It builds two lookup tables keyed by bare callee name:
+`graph::resolve::resolve(files: Vec<FileSymbols>, framework: Vec<FrameworkFacts>) -> Graph` is the
+only place that looks across files. It builds two lookup tables keyed by bare callee name:
 
 1. a **global** table (`HashMap<&str, Vec<&Callable>>`) covering every callable in every file, and
 2. for each file in turn, a **local** table covering only that file's callables.
@@ -170,6 +216,19 @@ For each unresolved `CallSite`, resolution tries the local table first (same-fil
 falling back to the global table only when the local table has no match, or when the local match is
 itself ambiguous and the global table can still narrow it down. This local-first policy means a
 same-named definition in another file never shadows an unambiguous local one.
+
+`framework`'s `call_targets` (a Spring Data repository method with no body anywhere in source; a
+`@FeignClient` boundary whose real implementation lives in a different repository entirely — see
+`docs/design/spring-aware-graph.md` §4.3) are converted to the same private `Callable` shape and
+folded into the **global** table only, before any file's `CallSite`s are resolved — never into any
+file's local table. The reasoning is the same shape as the local-first policy just above it, one level
+up: a framework call target is cross-file by construction (the caller is essentially never in the same
+file as a repository interface or a Feign client), so there is no "this file's own definition" for it
+to be. Keeping it global-only is also what guarantees it can never shadow a real local definition — the
+local table is still tried first, unconditionally, for every call. `resolve` itself stays completely
+unaware that any of this is "Spring": `FrameworkCallTarget::scope`/`scope_supers` mirror `Callable`'s
+fields exactly, so `pick`'s qualifier matching (below) treats a framework-contributed candidate exactly
+like a language-level one, through the identical code path.
 
 ### How ambiguity is handled
 
@@ -207,10 +266,25 @@ same as an unqualified call.
 
 ## Canonicalisation
 
-After every file's call sites are resolved, `resolve` sorts and dedups both `nodes` and `edges`
-(`GraphNode`/`GraphEdge` derive `Ord`) before returning the `Graph`. This is what makes the output
-stable enough to snapshot as a golden file and stable enough to submit downstream without spurious
-diffs between runs over the same input.
+After every file's call sites are resolved, `framework`'s nodes and edges are appended — additive,
+already fully resolved (both endpoints known without any further cross-file work; see
+`FrameworkFacts`'s own doc comment for why the type can only ever add, never override or remove) — and
+then `resolve` sorts and dedups both `nodes` and `edges` (`GraphNode`/`GraphEdge` derive `Ord`) before
+returning the `Graph`. This is what makes the output stable enough to snapshot as a golden file and
+stable enough to submit downstream without spurious diffs between runs over the same input.
+
+Plain sort+dedup only removes *exact* duplicates, which is all a language-level extractor can ever
+produce — a definition's `node_id` already embeds its own file and line, so two different definitions
+never collide on it. A framework-contributed node can: the same `@FeignClient(name = "payment-service")`
+declared in two files mints the same `node_id` twice, with two genuinely different
+`source_file`/`start_line` — two structurally different `GraphNode`s an exact-equality dedup cannot
+tell apart as "the same thing," which would otherwise leave the output with duplicate `node_id`s (an
+invariant `tests/container_repos.rs` checks). `resolve` runs one further pass,
+`dedup_colliding_node_ids`, that collapses any node_id collision down to exactly one node, choosing the
+one with the lexicographically lowest `(source_file, start_line)` — deterministically, not by whichever
+happened to be pushed or walked first, because an arbitrary winner would make the emitted graph depend
+on input order and break both the committed goldens and the "two runs over the same checkout produce
+byte-identical JSON" guarantee.
 
 ## Where embedding sits
 

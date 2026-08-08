@@ -67,10 +67,10 @@
       "start_line": 1
     },
     {
-      "node_id": "Main.java#25:runAmbiguousViaVariable",
-      "label": "runAmbiguousViaVariable()",
+      "node_id": "Main.java#27:runDisambiguatedByDeclaredType",
+      "label": "runDisambiguatedByDeclaredType()",
       "source_file": "Main.java",
-      "start_line": 25
+      "start_line": 27
     },
     {
       "node_id": "Main.java#2:run",
@@ -79,10 +79,34 @@
       "start_line": 2
     },
     {
+      "node_id": "Main.java#36:runAmbiguousViaInterface",
+      "label": "runAmbiguousViaInterface()",
+      "source_file": "Main.java",
+      "start_line": 36
+    },
+    {
       "node_id": "Main.java#7:runBare",
       "label": "runBare()",
       "source_file": "Main.java",
       "start_line": 7
+    },
+    {
+      "node_id": "Orbiter.java",
+      "label": "Orbiter.java",
+      "source_file": "Orbiter.java",
+      "start_line": 1
+    },
+    {
+      "node_id": "Orbiter.java#11:Orbiter",
+      "label": "Orbiter",
+      "source_file": "Orbiter.java",
+      "start_line": 11
+    },
+    {
+      "node_id": "Orbiter.java#12:orbit",
+      "label": "orbit()",
+      "source_file": "Orbiter.java",
+      "start_line": 12
     },
     {
       "node_id": "Util.java",
@@ -193,7 +217,7 @@
     },
     {
       "source": "Main.java#1:Main",
-      "target": "Main.java#25:runAmbiguousViaVariable",
+      "target": "Main.java#27:runDisambiguatedByDeclaredType",
       "relation": "method"
     },
     {
@@ -203,8 +227,18 @@
     },
     {
       "source": "Main.java#1:Main",
+      "target": "Main.java#36:runAmbiguousViaInterface",
+      "relation": "method"
+    },
+    {
+      "source": "Main.java#1:Main",
       "target": "Main.java#7:runBare",
       "relation": "method"
+    },
+    {
+      "source": "Main.java#27:runDisambiguatedByDeclaredType",
+      "target": "Lefty.java#2:orbit",
+      "relation": "calls"
     },
     {
       "source": "Main.java#2:run",
@@ -215,6 +249,16 @@
       "source": "Main.java#2:run",
       "target": "Widget.java#2:build",
       "relation": "calls"
+    },
+    {
+      "source": "Orbiter.java",
+      "target": "Orbiter.java#11:Orbiter",
+      "relation": "contains"
+    },
+    {
+      "source": "Orbiter.java#11:Orbiter",
+      "target": "Orbiter.java#12:orbit",
+      "relation": "method"
     },
     {
       "source": "Util.java",

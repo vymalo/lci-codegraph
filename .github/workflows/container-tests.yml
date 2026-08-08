@@ -69,4 +69,4 @@ jobs:
         # container_build meant container_neo4j and container_repos never ran at all, and a single
         # red job told us nothing about the other two. These suites are slow and independent; when
         # one breaks we want the full picture from that run, not a bisect across pushes.
-        run: cargo test --locked --features container-tests --no-fail-fast
+        run: cargo test --workspace --locked --features container-tests --no-fail-fast

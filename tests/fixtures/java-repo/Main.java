@@ -19,11 +19,21 @@ class Main {
         g.spin();
     }
 
-    // Negative: two same-named methods on different classes (Lefty.orbit()/Righty.orbit()),
-    // called through a variable receiver — must still be dropped as ambiguous. A value receiver
-    // must not turn "drop ambiguous" into "guess".
-    void runAmbiguousViaVariable() {
+    // Two same-named methods exist (Lefty.orbit()/Righty.orbit()), but `l`'s DECLARED type is
+    // right there on the previous line, so this is not ambiguous at all — it must resolve to
+    // Lefty.orbit specifically, never Righty.orbit. Declared-type recovery is what makes a
+    // multi-candidate set resolvable; issue #8's lowercase-receiver rule alone would drop this,
+    // because dropping the qualifier leaves nothing to choose with.
+    void runDisambiguatedByDeclaredType() {
         Lefty l = new Lefty();
         l.orbit();
+    }
+
+    // Negative: the receiver is typed as the INTERFACE both classes implement, so both are
+    // genuine candidates and the qualifier matches both through their `implements` clause. There
+    // is nothing to choose between them, and the resolver must drop the call rather than guess —
+    // this is `@Primary`/`@Qualifier` territory, deliberately out of scope.
+    void runAmbiguousViaInterface(Orbiter o) {
+        o.orbit();
     }
 }

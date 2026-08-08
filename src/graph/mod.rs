@@ -8,6 +8,15 @@
 //! generic `:Symbol` + `[:REL {relation}]` Neo4j write and the `graph_find_symbol` /
 //! `graph_get_callers` retrieval tools are unchanged behind the seam.
 //!
+//! [`GraphNode`], [`GraphEdge`], [`Graph`], and the `<file>#<line>:<name>` def-id format now live in
+//! the sibling `lci-codegraph-model` crate (re-exported here) rather than in this module directly. That
+//! split exists for a consumer this crate doesn't have yet but is built to accommodate: a
+//! framework-extractor crate (docs/design/spring-aware-graph.md) needs to speak the exact same node/edge
+//! vocabulary and produce byte-identical def ids, without depending on this crate's tree-sitter-parsing
+//! internals, and without this crate depending on it back. `lci-codegraph-model` depends on nothing but
+//! `serde`, so it is the one place both sides of that seam can meet — see its own crate-level doc for
+//! the full reasoning, and docs/architecture.md for how the pieces plug together at the workspace level.
+//!
 //! Languages with a real extractor today: **Rust** (ADR-0086 "Rust language first"), **Python**,
 //! **TypeScript/JavaScript** (incl. JSX/TSX), and **Java**. Every language emits the SAME node/edge
 //! vocabulary — the cross-file resolver ([`resolve`]/`pick`) is language-agnostic
@@ -24,6 +33,18 @@
 //! Line numbers are **1-based** and callable labels carry a `()` suffix (`add` → `add()`), both for
 //! parity with the Graphify `graph.json` schema this crate replaced.
 //!
+//! ## Java qualifier resolution (Phase 0, docs/design/spring-aware-graph.md §4.2)
+//! A call's qualifier is not the receiver's literal text unless nothing better is recoverable. For
+//! Java, `callee::declared_type_of` first tries to recover the receiver's **declared type** from the
+//! same file's AST (its local/field/parameter declaration), and `callee::supertype_names` lets a
+//! qualifier naming an interface/superclass count as a match against a candidate whose own scope is
+//! the concrete implementing/extending type. Together these fix the general (non-Spring) case that
+//! motivated the design doc: `accountService.findById(id)`, where `accountService` is a field typed
+//! `AccountService`, now resolves to `AccountServiceImpl.findById` — previously the qualifier was the
+//! bare identifier `"accountService"`, which never textually matched any candidate's scope. Both are
+//! Java-only **in effect** (gated by tree-sitter node kinds that simply don't exist in the other
+//! tags-driven grammars), not by a language flag — see the doc comments on those two functions.
+//!
 //! ## Module layout
 //! The module is split by concern, each a single-responsibility slice of the pipeline:
 //! - `emit` — the tree-sitter DFS that emits def nodes + `contains`/`method` edges and records call
@@ -31,12 +52,24 @@
 //! - `callee` — parses a call site's callee reference (bare name + optional type qualifier) out of
 //!   the AST, for both the Rust `call_expression` navigation and the tags-captured callee name node.
 //! - `resolve` — the cross-file name resolver ([`resolve`]/`pick`) that turns
-//!   recorded call sites into `calls` edges.
+//!   recorded call sites into `calls` edges, and merges in whatever a framework-extractor crate
+//!   contributed (see below).
 //!
 //! `emit`, `callee` and `resolve` are private modules; only [`extract_file`] and [`resolve`] are
 //! re-exported, so the names above are written as plain code spans rather than intra-doc links.
+//!
+//! ## Where `FrameworkFacts` joins the graph
+//! [`resolve`] takes a second parameter, `framework: Vec<FrameworkFacts>` — one entry per
+//! framework-eligible file a caller chose to run a framework extractor over (today: Java files, via
+//! `lci-codegraph-spring`; see `src/input.rs`). This module knows nothing about Spring, Feign, or any
+//! other framework; it only knows the shape [`FrameworkFacts`]/[`FrameworkCallTarget`] describe —
+//! additive nodes, additive edges, and additive call-target candidates — and merges them in
+//! alongside the language-level facts, before the same sort+dedup canonicalisation every other node
+//! and edge goes through. An empty `framework` vec reproduces this module's pre-framework behaviour
+//! exactly, by construction: every non-Java caller, and every Java repo nothing framework-specific
+//! was ever extracted for, is unaffected because there is nothing to merge, not because of a flag.
 
-use serde::Serialize;
+use std::sync::Arc;
 
 mod callee;
 mod emit;
@@ -45,32 +78,8 @@ mod resolve;
 mod tests;
 
 pub use emit::extract_file;
+pub use lci_codegraph_model::{FrameworkCallTarget, FrameworkFacts, Graph, GraphEdge, GraphNode};
 pub use resolve::resolve;
-
-/// One graph node. Field set mirrors `agent-clients::GraphNodePayload` exactly.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
-pub struct GraphNode {
-    pub node_id: String,
-    pub label: String,
-    pub source_file: String,
-    pub start_line: i64,
-}
-
-/// One directed edge. Field set mirrors `agent-clients::GraphEdgePayload` exactly.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
-pub struct GraphEdge {
-    pub source: String,
-    pub target: String,
-    pub relation: String,
-}
-
-/// A resolved structural graph, canonicalised (nodes + edges sorted, deduped) so it is stable to
-/// snapshot as a golden and stable to submit.
-#[derive(Debug, Default, Clone, Serialize, PartialEq, Eq)]
-pub struct Graph {
-    pub nodes: Vec<GraphNode>,
-    pub edges: Vec<GraphEdge>,
-}
 
 /// The per-file structural facts: the file's nodes (file node + defs), its intra-file `contains` /
 /// `method` edges, and the unresolved call sites for the cross-file pass.
@@ -94,6 +103,18 @@ struct Callable {
     /// **only** as a tiebreaker to disambiguate several same-named callables. `None` for free
     /// functions.
     scope: Option<String>,
+    /// Simple names of whatever `scope`'s type `extends`/`implements` (Java only — see
+    /// `callee::supertype_names`), used by `resolve::pick` so a call qualifier naming an
+    /// interface/superclass counts as a match against this callable, not a contradiction — the
+    /// Phase 0 general-Java fix in docs/design/spring-aware-graph.md §4.2, item 2:
+    /// `accountService.findById()`'s recovered qualifier is `AccountService`, but the sole
+    /// candidate's `scope` is `AccountServiceImpl`; `scope_supers` is what lets `pick` see that
+    /// `AccountServiceImpl implements AccountService` and accept the match. Empty for every
+    /// callable with no such clause — free functions, Rust methods, and every non-Java tagged
+    /// language. `Arc<[String]>` rather than `Vec<String>`: every method on the same type shares
+    /// one enclosing scope's supers, so this is a refcount bump per callable instead of a clone of
+    /// the same list.
+    scope_supers: Arc<[String]>,
 }
 
 /// An unresolved call site: the enclosing caller def id, the bare callee name, and — when the call is

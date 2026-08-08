@@ -1,5 +1,13 @@
-[package]
-name = "lci-codegraph"
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+# Single source of truth for the workspace's version: every `[package]` block below (and in
+# `crates/*/Cargo.toml`) sets `version.workspace = true` instead of repeating this literal. It cannot
+# fully eliminate the number from the manifests, though — see the comment on the
+# `lci-codegraph-model` / `lci-codegraph-spring` entries in `[workspace.dependencies]` below for the
+# one place it still has to appear as a real version requirement, and how that place is guarded.
 version = "0.1.0"
 edition = "2024"
 # 1.88, not 1.85 (the edition-2024 floor): `lopdf` >= 0.42 uses let-chains, stabilised in 1.88.
@@ -10,6 +18,40 @@ rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/vymalo/lci-codegraph"
 homepage = "https://github.com/vymalo/lci-codegraph"
+
+# Dependencies more than one crate in the workspace needs, pinned once so every member resolves the
+# same version. `tree-sitter`/`tree-sitter-java`/`tracing` are hoisted ahead of actually having a
+# second consumer: a framework-extractor crate (Java/Spring-aware, parsing with the same grammar) is
+# the next crate to land in `crates/`, and it will need exactly these three.
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+tracing = "0.1.31"
+tree-sitter = "0.26"
+tree-sitter-java = "0.23"
+# The workspace's own internal crates, hoisted here (rather than declared per-consumer) so every
+# consumer — currently the root package and `lci-codegraph-spring` — resolves the same path and
+# version. Paths in `[workspace.dependencies]` are relative to the workspace root, not to the
+# consuming crate's own directory, which is what lets one declaration here serve both.
+#
+# The `version = "0.1.0"` requirement on each line below is the one place the workspace version
+# number still can't be collapsed to `version.workspace = true`: crates.io requires a real version
+# requirement (not just a path) on a dependency once it's a published crate, so this literal has to
+# stay in sync with `[workspace.package].version` above by hand. It is guarded, not just trusted:
+# `.github/workflows/release.yml`'s `verify-version` job asserts, before any publish, that this
+# requirement resolves to the same version as the release tag and every workspace member — see that
+# job for the check that would fail if this line ever drifted.
+lci-codegraph-model = { path = "crates/lci-codegraph-model", version = "0.1.0" }
+lci-codegraph-spring = { path = "crates/lci-codegraph-spring", version = "0.1.0" }
+
+[package]
+name = "lci-codegraph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 documentation = "https://docs.rs/lci-codegraph"
 description = "Code-graph extractor: semantic chunking, a cross-file structural call graph, and embedding-prep over one tree-sitter parse."
 readme = "README.md"
@@ -32,18 +74,31 @@ path = "src/lib.rs"
 # no kube/sqlx/forge client, and the embeddings call is the ONLY thing `ureq` is used for.
 [dependencies]
 anyhow = "1.0.103"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
-tracing = "0.1.31"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
 # Compile-time builders for the wide config constructors (`WalkOptions`, `IgnoreConfig`).
 bon = "3.9.3"
+# The shared node/edge vocabulary (and the framework-facts seam a framework-extractor crate targets) —
+# see `crates/lci-codegraph-model` and `docs/architecture.md` for why this is a separate crate rather
+# than a module.
+lci-codegraph-model.workspace = true
+# Spring-aware structural facts (routes, Feign boundaries, Spring Data repository methods), run as a
+# sibling pass over the same parse `graph::extract_file` already has. A separate CRATE, not a module
+# here, because `docs/design/spring-aware-graph.md` §5.2 draws a real distinction: a curated
+# annotation/marker-interface allowlist churns every Spring release, which is a narrower and much
+# noisier coupling than a tree-sitter grammar (changes rarely, maintained by someone else). Behind a
+# crate boundary, "does the core know about Spring?" is answerable by reading this manifest's
+# dependency list, not by auditing every module for a stray `use` — and it keeps that churn from ever
+# leaking into `src/graph`, which stays entirely framework-agnostic.
+lci-codegraph-spring.workspace = true
 # Tree-sitter grammars. The structural graph is edges built on top of the symbols these find.
-tree-sitter = "0.26"
+tree-sitter = { workspace = true }
 tree-sitter-rust = "0.24"
 tree-sitter-javascript = "0.25"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-python = "0.25"
-tree-sitter-java = "0.23"
+tree-sitter-java = { workspace = true }
 # ripgrep's ignore engine: honours the repo's own `.gitignore` AND lets us layer an
 # operator-configurable glob list on top with the SAME gitignore semantics (`GitignoreBuilder`).
 # This is how the crate *composes with* — rather than replaces — the repo ignores.

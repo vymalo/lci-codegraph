@@ -1,12 +1,63 @@
 # Design exploration: a Spring-aware code graph
 
-- **Status:** Exploration — not a commitment. Written to support a build/don't-build decision, not to
-  announce one.
+- **Status:** Phase 0 and Phase 1 implemented (see "What was built" below); Phase 2 not started, gated
+  as this document always said it would be. The analysis and recommendation below are the historical
+  record of that decision, kept intact — read them as reasoning, not as an aspirational spec of
+  today's code.
 - **Date:** 2026-08-08
 - **Scope:** `lci-codegraph`'s Java support only. Spring Framework, Spring Boot, Spring Cloud.
 - **Companion artifact:** a throwaway feasibility spike, `spring-spike/` (path in the accompanying
   report — not part of this crate, not committed here), proves the tree-sitter mechanics this
   document assumes rather than asserting them. Concrete findings are marked **[spike]** below.
+
+## What was built
+
+Phase 0 (§4.2 — general Java resolution, not Spring-specific) and Phase 1 (§2.1, §2.2, §4.3) landed.
+Phase 2 (§2.3, §6) did not; see the gate below.
+
+- **The crate split into a Cargo workspace**: [`crates/lci-codegraph-model`](../../crates/lci-codegraph-model)
+  carries the shared `GraphNode`/`GraphEdge`/`Graph`/`def_node_id`/`FrameworkFacts`/`FrameworkCallTarget`
+  vocabulary (§5.2's crate-boundary argument, taken as written), and
+  [`crates/lci-codegraph-spring`](../../crates/lci-codegraph-spring) is the sibling extraction pass
+  §3.2 describes: `extract_facts(&Tree, source, source_file) -> FrameworkFacts`.
+- **`route` and `external_service` node kinds (§2.1), the Spring Data marker-interface carve-out
+  (§4.3), and DI-aware `calls` resolution for the single-implementation case (§2.2)** are all in
+  place, verified end to end against the committed fixture
+  [`tests/fixtures/spring-repo/`](../../tests/fixtures/spring-repo) and its golden,
+  [`tests/golden/spring-repo.graph.json`](../../tests/golden/spring-repo.graph.json).
+- **§4.2's central prediction held, concretely**: `AccountController`'s
+  `accountService.findByEmail(email)` — a field-injected call through an interface with one
+  implementation — resolves to `AccountServiceImpl.findByEmail` through Phase 0 alone (declared-type
+  qualifier recovery in `src/graph/callee.rs`, plus the supertype-aware match in `resolve::pick`), with
+  **zero** Spring-specific knowledge involved anywhere in that edge. `lci-codegraph-spring` never runs
+  on it.
+- **Two deviations from this document, stated plainly rather than glossed over:**
+  1. §2.1 said an `external_service` node would carry no `source_file`/`start_line` "in the usual
+     sense." It carries both: it points at the `@FeignClient` interface declaration instead. `GraphNode`
+     has no optional fields, so a synthetic empty path would have been just as much a fiction and
+     strictly less useful than a real one — a real location hands a reviewer the file to open. The
+     collision this creates (the same service name declared in two files) is collapsed deterministically
+     in `resolve` (`dedup_colliding_node_ids`), keeping the node with the lexicographically lowest
+     `(source_file, start_line)`.
+  2. The Spring Data carve-out (§4.3) is per-file, exactly as scoped, which means it does not follow a
+     *transitive* marker interface (one extending the repo's own base interface, which itself extends
+     `JpaRepository`) and does not implement the `<Name>Impl` companion-class escape hatch §4.3 already
+     flagged as a known caveat. With both present at once, the resolver sees two same-named candidates
+     and drops the call — correct precision-favouring behaviour per §5.3's policy, but not the most
+     useful outcome a reviewer could hope for.
+- **Deliberately not built:**
+  - **All of Phase 2** — the `injects` relation (§2.3) and `@Primary`/`@Qualifier` multi-implementation
+    disambiguation (§4.3) — because §5.1's gate has not opened: the consumer repo's
+    (`lightbridge-code-intelligence`) `get_callers` still hardcodes `relation: 'calls'`, so an `injects`
+    edge would write cleanly and then sit completely unqueryable by anything that repo can call today.
+    Shipping the write side alone would land edges nothing downstream can reach — precisely the mistake
+    §5.1 names. Phase 2 starts once that repo's read side is generalized (or grows a Spring-specific
+    tool), tracked as its own issue there, not here.
+  - **A bean registry.** Nothing in this crate needs to consume one: Phase 0 already makes single-impl
+    DI resolve generically, with no framework knowledge required, so a registry with no reader would be
+    exactly the dormant code this project's delivery discipline argues against building.
+  - **`persists` (§2.4), XML bean config, `@ComponentScan`, `@Profile`/conditional bean evaluation
+    (§5.3)** — rejected as designed here, and still rejected.
 
 ## Recommendation, up front
 

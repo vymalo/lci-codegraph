@@ -1,11 +1,11 @@
-class Lefty {
-    int orbit() {
+class Lefty implements Orbiter {
+    public int orbit() {
         return 1;
     }
 }
 
-class Righty {
-    int orbit() {
+class Righty implements Orbiter {
+    public int orbit() {
         return 2;
     }
 }

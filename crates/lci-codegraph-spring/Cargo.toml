@@ -1,0 +1,31 @@
+[package]
+name = "lci-codegraph-spring"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/lci-codegraph-spring"
+description = "Spring-aware structural facts (HTTP routes, Feign service boundaries, Spring Data repository methods) for lci-codegraph."
+readme = "README.md"
+keywords = ["tree-sitter", "spring", "java", "code-graph", "static-analysis"]
+categories = ["development-tools", "parser-implementations"]
+
+# This crate exists to hold ONE thing the core extractor deliberately refuses to carry: knowledge of
+# a specific library's API surface. `docs/design/spring-aware-graph.md` §5.2 is the argument — an
+# annotation allowlist is a different and narrower coupling than a tree-sitter grammar (a grammar
+# changes rarely and is maintained by someone else; Spring's annotation set moves every release, and
+# Spring Boot 3's `javax` → `jakarta` migration is the kind of churn this signs up for). Keeping it
+# behind a crate boundary makes "does the core know about Spring?" answerable by reading a manifest
+# instead of by trusting a comment.
+#
+# The dependency list is the enforcement: the model crate for the shared vocabulary, and the same
+# tree-sitter grammar the core parses with. Nothing else belongs here — in particular NOT
+# `lci-codegraph` itself, which would create the cycle this crate is shaped to avoid.
+[dependencies]
+lci-codegraph-model.workspace = true
+tree-sitter = { workspace = true }
+
+[dev-dependencies]
+tree-sitter-java = { workspace = true }

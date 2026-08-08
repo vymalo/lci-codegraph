@@ -33,6 +33,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Chunk::embedding: Option<Vec<f32>>` and `Chunk::embed_input: Option<String>` (both
   `#[serde(skip_serializing_if = "Option::is_none")]`, so existing JSON output is unchanged when
   embedding is off).
+- `crates/lci-codegraph-model` and `crates/lci-codegraph-spring`: the repo root is now a Cargo
+  workspace, not a single crate. `lci-codegraph` (this package) keeps its existing paths (`src/`,
+  `tests/`, `examples/`, `docs/`) and public API unchanged — nothing about depending on it moved.
+  `lci-codegraph-model` holds the shared `GraphNode`/`GraphEdge`/`Graph`/`def_node_id` vocabulary plus
+  the new `FrameworkFacts`/`FrameworkCallTarget` types (below), depending on nothing but `serde` — the
+  bottom of the workspace's dependency graph, so a framework-extractor crate and the core crate can
+  both depend on it without depending on each other. `lci-codegraph-spring` is
+  `extract_facts(&Tree, source, source_file) -> FrameworkFacts`, a Spring-aware sibling pass run over
+  the same parse `graph::extract_file` already has for a Java file, gated on the file importing
+  `org.springframework`/`jakarta.persistence` — a non-Spring Java file pays for one import scan and
+  nothing more. This is a crate boundary rather than a module because a framework's annotation surface
+  is a curated allowlist that churns every release (Spring's own annotation set moves every
+  major/minor; this repo's Spring fixtures already straddle the `javax.persistence` →
+  `jakarta.persistence` migration) — a materially different, narrower coupling than a tree-sitter
+  grammar, which changes rarely and is maintained by someone else. See
+  `docs/design/spring-aware-graph.md` §5.2 and `docs/architecture.md` for the full reasoning.
+- Two additive `GraphNode` kinds for Spring-annotated Java source, contributed by
+  `lci-codegraph-spring` and merged into the graph by `graph::resolve`. Neither is a new relation —
+  both are ordinary nodes, reached through the existing `calls` relation, so anything that already
+  matches nodes by `node_id`/`label`/`source_file` finds them the same way it finds any other node:
+  - `route` — one node per HTTP endpoint (the `@GetMapping`/`@PostMapping`/`@PutMapping`/
+    `@DeleteMapping`/`@PatchMapping` family, or a bare `@RequestMapping`), keyed by HTTP method plus
+    the composed class+method path (`route:GET:/api/accounts/{email}`). `source_file`/`start_line`
+    point at the handler method itself, not a synthetic location, and a `calls` edge runs from the
+    route to the handler.
+  - `external_service` — one node per distinct `@FeignClient(name = "...")` target
+    (`service:payment-service`), pointing at the interface declaration (`GraphNode` has no optional
+    fields, so a real location was chosen over a fictional empty one). A call site reaching one of its
+    methods resolves to this node instead of silently dropping. Two files declaring the same service
+    name collapse deterministically to one node — the lexicographically lowest `(source_file,
+    start_line)` wins — rather than producing duplicate `node_id`s.
+- A Spring Data repository carve-out in the call-target rule: a bodiless method on an interface whose
+  `extends`/`implements` clause names a Spring Data marker interface (`Repository`, `CrudRepository`,
+  `PagingAndSortingRepository`, `JpaRepository`, `ReactiveCrudRepository`, `MongoRepository`, …,
+  matched by simple name) stays a valid `calls` target instead of being excluded as an unimplemented
+  declaration. Spring generates the implementation from the method name at runtime, so no body will
+  ever exist anywhere in source — treating the declaration as unreachable, which the general
+  declaration-exclusion rule otherwise would, was a real coverage regression, not a correct
+  application of caution. The carve-out is per-file: it does not follow a *transitive* marker
+  interface, and it does not recognise the `<Name>Impl` companion-class escape hatch Spring Data
+  itself supports (see `docs/design/spring-aware-graph.md` §4.3, "What was built").
+
+### Fixed
+
+- **Java call resolution through a field/parameter/local-typed receiver.** A call like `h.help()`
+  used to qualify on the *variable name* (`h`) rather than the receiver's *declared type* (`Helper`),
+  which the resolver then rejected as a scope mismatch (`"h" != "Helper"`) — so
+  `Helper h = new Helper(); h.help();` produced **no** `calls` edge at all, in any Java codebase,
+  framework or not. The qualifier is now recovered as the receiver's declared type, resolved by
+  walking the same file's AST back to a field, formal parameter, local variable, enhanced-`for`
+  variable, or caught exception's declaration (`src/graph/callee.rs::declared_type_of`); a qualifier
+  naming an interface/superclass a candidate's enclosing type `extends`/`implements` now also counts
+  as a match rather than a contradiction (`Callable::scope_supers`, `resolve::qualifier_matches`).
+  This is a **general Java-resolution fix, not a Spring feature** — most of its value lands on
+  ordinary, non-Spring Java repositories calling through an interface-typed field or local, which is
+  most instance calls in idiomatic Java. It is also the prerequisite the two new node kinds above
+  build on: it is what lets a controller's call through a field-injected service interface resolve to
+  that interface's sole implementation with zero Spring-specific knowledge involved anywhere in the
+  edge (`docs/design/spring-aware-graph.md` §4.2).
 
 ### Fixed
 
@@ -77,6 +136,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WalkOutput`/`WalkStats` with `IndexOutput`/`IndexStats` wherever they're named (the field shapes are
   unchanged, plus the new counters above) — `walk_checkout`/`walk_checkout_from_env`'s signatures are
   otherwise unchanged.
+- `graph::resolve` gained a second parameter: `resolve(files: Vec<FileSymbols>) -> Graph` is now
+  `resolve(files: Vec<FileSymbols>, framework: Vec<FrameworkFacts>) -> Graph`. Migration:
+  `resolve(files)` → `resolve(files, Vec::new())` — an empty `framework` vec reproduces the previous
+  behaviour exactly, so any caller with no framework facts to contribute (every non-Java caller, and
+  every Java repo `lci-codegraph-spring` found nothing Spring-specific in) is unaffected by
+  construction, not by a flag.
 
 ## [0.1.0] - 2026-08-07
 

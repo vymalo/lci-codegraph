@@ -19,7 +19,8 @@ Work is **Ready** only when its intent is clear, its source of truth is linked, 
 
 ### Prerequisites
 
-- Rust 1.70+ (the MSRV is specified in `Cargo.toml`)
+- Rust 1.88+ (the MSRV is `workspace.package.rust-version` in the root `Cargo.toml`, which explains
+  why it is 1.88 and not the edition-2024 floor of 1.85)
 - Docker daemon (required for container-based tests; optional for basic development)
 
 ### Verification commands
@@ -28,10 +29,15 @@ Before opening a pull request, verify your changes locally:
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo test --features container-tests   # requires a running Docker daemon
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test --workspace --features container-tests   # requires a running Docker daemon
 ```
+
+The repo root is a Cargo workspace (`lci-codegraph` plus `crates/lci-codegraph-model` and
+`crates/lci-codegraph-spring` — see `README.md`'s "Workspace layout"). Plain `cargo test`/
+`cargo clippy` without `--workspace` only cover the root package and silently skip the two `crates/`
+members' own unit tests and `crates/lci-codegraph-spring/tests/`.
 
 All of these must pass before merging.
 
